@@ -3,6 +3,7 @@ import sys
 import time
 import re
 import requests
+import datetime
 from PyQt5.QtWidgets import (QApplication, QWidget, QMainWindow, QDesktopWidget, QGridLayout, QLabel, QLineEdit,
                              QProgressBar, QTextEdit, QAction)
 from PyQt5.QtGui import QFont, QIcon
@@ -39,7 +40,7 @@ class Parser_Thread(QThread):
     run_flag = False
     set_max = pyqtSignal(int)
     update = pyqtSignal(int)
-    speed = pyqtSignal(int)
+    speed = pyqtSignal(float)
     logging = pyqtSignal(str)
     thread_stop = pyqtSignal()
 
@@ -67,13 +68,13 @@ class Parser_Thread(QThread):
         header.update(Referer=page_url)
         name = self.name_re_module.search(string=page_result.text)
         if '404 未找到' in page_result.text or name is None:
-            self.logging.emit('** 找無此影片')
+            self.logging.emit('找無此影片(ID: {})'.format(video_id))
         else:
             name = name.group('name')
             for word in self.limit_word:
                 if word in name:
                     name = name.replace(word, '')
-            self.logging.emit('** 影集名稱: {}'.format(name))
+            self.logging.emit('影片名稱: {}'.format(name))
 
             target_url = None
             for each in self.m3u8_re_module.finditer(string=page_result.text):
@@ -84,13 +85,13 @@ class Parser_Thread(QThread):
                     target_url = search_url[:search_url.index('.m3u8') + 5]
                     break
             if target_url is None or index_url is None:
-                self.logging.emit('** 下載失敗影片')
+                self.logging.emit('「{}」下載失敗'.format('name'))
             else:
                 header.update(Referer=index_url)
 
                 directory = os.path.join(os.path.abspath(os.curdir), name)
 
-                self.logging.emit('** 建立資料夾: {}'.format(name))
+                self.logging.emit('建立資料夾「{}」'.format(name))
 
                 if not os.path.exists(directory):
                     os.mkdir(directory)
@@ -109,9 +110,9 @@ class Parser_Thread(QThread):
                 with open(m3u8_file, 'wb') as f:
                     f.write(m3u8_data)
 
-                self.logging.emit('** 已抓取m3u8檔案')
+                self.logging.emit('已抓取m3u8檔案')
 
-                self.logging.emit('** 開始下載影片')
+                self.logging.emit('開始下載影片')
 
                 ts_dir = os.path.join(directory, 'ts_file')
                 if not os.path.exists(ts_dir):
@@ -132,7 +133,7 @@ class Parser_Thread(QThread):
                             ts_video_name = self.ts_re_module.search(string=line).group('ts_name')
                             if not os.path.exists(os.path.join(ts_dir, ts_video_name + '.ts')):
 
-                                start = time.clock()
+                                start_time = time.process_time()
                                 data = init_session.get(url=line, headers=header)
 
                                 fault_counter = 0
@@ -144,14 +145,14 @@ class Parser_Thread(QThread):
                                                 f.write(ch)
                                                 ts_f.write(ch)
                                             f.flush()
+                                        break
                                     except IOError:
                                         fault_counter += 1
                                 if fault_counter >= 10:
-                                    self.logging.emit('** 下載失敗影片')
+                                    self.logging.emit('下載失敗影片')
                                     break
                                 else:
-                                    self.speed.emit(len(data.content) / time.clock() - start)
-
+                                    self.speed.emit(len(data.content) / time.process_time() - start_time)
                             if not start and count > 5:
                                 os.startfile(os.path.join(directory, name + '.mp4'))
                                 start = True
@@ -159,9 +160,11 @@ class Parser_Thread(QThread):
                             self.update.emit(count * 100 / len(ts_list))
 
                 if self.run_flag:
-                    self.logging.emit('** 下載完成')
+                    self.logging.emit('下載完成')
                 else:
-                    self.logging.emit('** 停止下載')
+                    self.logging.emit('停止下載')
+        self.speed.emit(0)
+        self.update.emit(0)
         self.thread_stop.emit()
 
 
@@ -174,6 +177,7 @@ class MainWindows(QMainWindow):
         self.parser.update.connect(self.update_progress)
         self.parser.logging.connect(self.logging)
         self.parser.thread_stop.connect(self.release_start_opa)
+        self.parser.speed.connect(self.speed_monitor)
         self.initUI()
 
     def initUI(self):
@@ -182,11 +186,12 @@ class MainWindows(QMainWindow):
         self.setFont(QFont('微軟正黑體', 14))
         self.center()
         self.setWindowTitle('楓林網影片下載軟體')
+        self.setWindowIcon(QIcon('icon/icon.png'))
 
         # toolbar
-        self.startAct = QAction(QIcon('start.png'), 'Start', self)
+        self.startAct = QAction(QIcon('icon/start.png'), '開始下載', self)
         self.startAct.triggered.connect(self.start_download)
-        self.stopAct = QAction(QIcon('stop.png'), 'Stop', self)
+        self.stopAct = QAction(QIcon('icon/stop.png'), '停止下載', self)
         self.stopAct.setEnabled(False)
         self.stopAct.triggered.connect(self.stop_download)
 
@@ -203,7 +208,7 @@ class MainWindows(QMainWindow):
         self.progress_bar.setValue(0)
         self.progress_bar.setFormat('0 %')
         self.progress_bar.setAlignment(Qt.AlignCenter)
-        self.label_speed = QLabel('0 kb/s', self.statusbar)
+        self.label_speed = QLabel('0 KB/s', self.statusbar)
         self.statusbar.addPermanentWidget(self.label_speed)
         self.statusbar.addWidget(self.progress_bar, 1)
 
@@ -223,9 +228,11 @@ class MainWindows(QMainWindow):
         grid.addWidget(self.line_edit_id, 0, 1)
 
         self.text_edit_msg = QTextEdit(self)
+        self.text_edit_msg.setFont(QFont('微軟正黑體', 10))
+
         self.text_edit_msg.verticalScrollBar().rangeChanged.connect(self.scroll_to_button)
         self.text_edit_msg.setReadOnly(True)
-        self.text_edit_msg.setPlainText('輸入ID後點擊開始下載。')
+        self.logging('輸入ID後點擊開始下載。')
         grid.addWidget(self.text_edit_msg, 1, 0, 2, 2)
 
         self.show()
@@ -236,7 +243,9 @@ class MainWindows(QMainWindow):
         qr.moveCenter(cp)
 
     def scroll_to_button(self):
-        self.text_edit_msg.verticalScrollBar().setValue(self.text_edit_msg.verticalScrollBar().maximum())
+        c = self.text_edit_msg.textCursor()
+        c.movePosition(c.EndOfLine)
+        self.text_edit_msg.setTextCursor(c)
 
     def start_download(self):
         self.line_edit_id.setReadOnly(True)
@@ -253,7 +262,8 @@ class MainWindows(QMainWindow):
         self.startAct.setEnabled(True)
 
     def logging(self, data):
-        self.text_edit_msg.setPlainText(self.text_edit_msg.toPlainText() + os.linesep + data)
+        data = datetime.datetime.now().strftime('[%H:%M:%S] ') + data
+        self.text_edit_msg.insertPlainText(data + os.linesep)
 
     def set_progress_max(self, data):
         self.progress_bar.setMaximum(data)
@@ -261,6 +271,20 @@ class MainWindows(QMainWindow):
     def update_progress(self, value):
         self.progress_bar.setValue(value)
         self.progress_bar.setFormat('{} %'.format(value))
+
+    def speed_monitor(self, data):
+        unit = ['KB/s', 'MB/s', 'GB/s']
+        data = data / 8 / 1024
+        unit_idx = 0
+        while data >= 1024 and unit_idx < len(unit) - 1:
+            data /= 1024
+            unit_idx += 1
+        self.label_speed.setText('{:.1f} {}'.format(data, unit[unit_idx]))
+
+    def closeEvent(self, event):
+        if self.parser.isRunning():
+            self.stopAct.trigger()
+            self.parser.wait()
 
 
 if __name__ == '__main__':
